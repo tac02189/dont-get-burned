@@ -1,0 +1,16 @@
+{
+  "name": "pocus-pitfalls-build",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build harness for 'Don't Get Burned: When Ultrasound Lies' — HTML deck + pptx companion",
+  "scripts": {
+    "build:pptx": "node scripts/build-pptx.mjs",
+    "dedupe": "node scripts/dedupe-media.mjs"
+  },
+  "dependencies": {
+    "jszip": "^3.10.2",
+    "pptxgenjs": "^4.0.1",
+    "qrcode": "^1.5.4"
+  }
+}

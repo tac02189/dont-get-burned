@@ -1,0 +1,102 @@
+rules_version = '2';
+
+// ============================================================
+//  pocus-live — audience response for lecture decks
+//
+//  Threat model is deliberately modest: this is anonymous, non-PHI
+//  poll data projected on a screen for a few minutes. What the rules
+//  DO need to prevent is (a) a random joiner driving the presenter's
+//  deck, and (b) one device stuffing the ballot.
+//
+//  Presenter identity is the anonymous uid that created the session,
+//  stored as ownerUid. The presenter's browser keeps that uid in
+//  localStorage, so reopening the deck on the same machine still owns
+//  the session. A different device cannot take control.
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn()    { return request.auth != null; }
+    function isOwner(doc)  { return signedIn() && doc.data.ownerUid == request.auth.uid; }
+
+    // How long a session may sit untouched before another browser may claim it.
+    // The presenting deck stamps a heartbeat on every poll slide and every five
+    // minutes it is open, so a talk in progress can never be taken over.
+    function fresh(doc) {
+      return "heartbeat" in doc.data
+             && doc.data.heartbeat is timestamp
+             && doc.data.heartbeat > request.time - duration.value(30, "m");
+    }
+    // A heartbeat may only ever be a real server timestamp.
+    function heartbeatOk() {
+      return !("heartbeat" in request.resource.data)
+             || request.resource.data.heartbeat is timestamp;
+    }
+
+    match /sessions/{code} {
+
+      // Anyone signed in (anonymously) can read the session doc — that is
+      // how a phone learns which poll is open and what the options say.
+      allow read: if signedIn();
+
+      // Creating a session claims ownership. ownerUid must be your own uid,
+      // so you cannot create a session owned by someone else.
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.keys().hasOnly(
+                         ['ownerUid','title','currentPoll','state','q','createdAt','heartbeat','run'])
+                    && request.resource.data.currentPoll is int
+                    && request.resource.data.state in ['idle','open','closed']
+                    && heartbeatOk();
+
+      // Only the owner advances the poll or changes its state. This is the rule
+      // that stops an attendee from driving the talk.
+      //
+      // The one exception is a session nobody has driven for 30 minutes, which
+      // any signed-in client may claim by naming itself owner and stamping a
+      // fresh server heartbeat. Ownership is an anonymous uid that lives in one
+      // browser profile, and on 2026-09-14 a stale one locked the presenter out
+      // of his own talk in total silence — the phones stayed frozen on question
+      // one. An abandoned session must not be a permanent lockout; a live one
+      // still cannot be stolen, because a deck that is presenting is never 30
+      // minutes quiet.
+      allow update: if signedIn() && heartbeatOk() && (
+                      ( isOwner(resource)
+                        && request.resource.data.ownerUid == resource.data.ownerUid )
+                      ||
+                      ( !fresh(resource)
+                        && request.resource.data.ownerUid == request.auth.uid
+                        && request.resource.data.heartbeat == request.time )
+                    );
+
+      allow delete: if isOwner(resource);
+
+      match /polls/{pollNum}/votes/{uid} {
+
+        // Everyone can read the tally. The votes are anonymous choices with
+        // no identifying content, and the presenter needs to aggregate them.
+        // Hiding the running total from the audience is a presentation
+        // decision made in the deck, not a security boundary.
+        allow read: if signedIn();
+
+        // One document per device, named by uid: you may only write your own.
+        // That is what makes double-voting structurally impossible rather
+        // than merely discouraged.
+        allow create, update: if signedIn()
+                              && uid == request.auth.uid
+                              && request.resource.data.keys().hasOnly(['choice','at'])
+                              && request.resource.data.choice is int
+                              && request.resource.data.choice >= 0
+                              && request.resource.data.choice <= 5;
+
+        // Votes are never deleted mid-session; clearing a poll is done by
+        // the owner deleting the session, not by rewriting history.
+        allow delete: if false;
+      }
+    }
+
+    // Nothing else in this project is reachable.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

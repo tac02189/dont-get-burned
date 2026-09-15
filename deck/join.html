@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0E0E11">
+<title>Vote — Don't Get Burned</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--ground:#0E0E11;--lift:#17171C;--hair:#32323C;--bone:#EDE7DF;--dim:#9A958E;
+      --ember:#E2571E;--cyan:#5FD4CA;--disp:'Fraunces',Georgia,serif;--body:'Archivo',system-ui,sans-serif}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;min-height:100vh;background:var(--ground);color:var(--bone);font-family:var(--body);
+  padding:max(20px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom));
+  display:flex;flex-direction:column}
+header{flex:0 0 auto;border-bottom:1px solid var(--hair);padding-bottom:14px;margin-bottom:22px}
+.brand{font-size:10.5px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--ember)}
+.code{font-family:var(--disp);font-size:24px;font-weight:700;margin-top:4px;letter-spacing:.04em}
+.state{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-top:6px;
+  display:flex;align-items:center;gap:7px}
+.state .dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.state.open{color:var(--cyan)} .state.open .dot{background:var(--cyan);animation:p 1.5s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+main{flex:1;display:flex;flex-direction:column;justify-content:center}
+h1{font-family:var(--disp);font-size:23px;font-weight:600;line-height:1.25;margin:0 0 22px}
+.opts{display:flex;flex-direction:column;gap:12px}
+button.opt{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--lift);
+  border:1px solid var(--hair);color:var(--bone);padding:18px 16px;font-family:var(--body);font-size:16px;
+  line-height:1.35;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s}
+button.opt:active{background:#22222a}
+button.opt .k{font-family:var(--disp);font-size:19px;font-weight:700;color:var(--dim);min-width:20px}
+button.opt.sel{border-color:var(--cyan);background:rgba(95,212,202,.12)}
+button.opt.sel .k{color:var(--cyan)}
+button.opt[disabled]{opacity:.45;cursor:default}
+.msg{text-align:center;color:var(--dim);font-size:15px;line-height:1.5;padding:26px 8px}
+.msg b{color:var(--bone);display:block;font-family:var(--disp);font-size:19px;margin-bottom:8px;font-weight:600}
+footer{flex:0 0 auto;margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);
+  font-size:11.5px;color:#67635E;line-height:1.5}
+.err{border-left:2px solid var(--ember);padding-left:12px;color:var(--dim);font-size:13px;line-height:1.5}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Mizzou EM &middot; Live poll</div>
+  <div class="code" id="code">&mdash;</div>
+  <div class="state" id="state"><span class="dot"></span><span id="stateT">Connecting</span></div>
+</header>
+<main id="main">
+  <div class="msg"><b>Connecting&hellip;</b>If this doesn't clear in a few seconds, the room will do it by show of hands instead.</div>
+</main>
+<footer>Anonymous. Nothing you tap is stored against your name, and nothing leaves this session.</footer>
+
+<script type="module">
+import { CONFIG, SESSION_CODE } from "./firebase-config.js";
+
+const code = new URLSearchParams(location.search).get("c") || SESSION_CODE;
+document.getElementById("code").textContent = code;
+const mainEl = document.getElementById("main");
+const stEl = document.getElementById("state");
+const stT = document.getElementById("stateT");
+
+const show = (html) => { mainEl.innerHTML = html; };
+const setState = (txt, open) => { stT.textContent = txt; stEl.classList.toggle("open", !!open); };
+
+function fail(reason){
+  setState("Offline", false);
+  show(`<div class="msg"><b>Can't reach the poll</b>
+    <div class="err">${reason}<br><br>Not a problem &mdash; the room will vote by show of hands.
+    Keep your eyes on the screen.</div></div>`);
+}
+
+if(!CONFIG || !CONFIG.apiKey || CONFIG.apiKey.startsWith("REPLACE")){
+  fail("This session hasn't been configured yet.");
+} else {
+  try{
+    const [{ initializeApp }, auth, fs] = await Promise.all([
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
+    ]);
+    const app = initializeApp(CONFIG);
+    const a = auth.getAuth(app);
+    const db = fs.getFirestore(app);
+
+    const cred = await Promise.race([
+      auth.signInAnonymously(a),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")), 8000))
+    ]);
+    const uid = cred.user.uid;
+
+        // keyed by run+poll: a new lecture must not show you last time's answer
+    let voted = {};
+
+    fs.onSnapshot(fs.doc(db,"sessions",code), { includeMetadataChanges:true }, (snap)=>{
+      // A missing doc served from cache means offline, not "no session".
+      if(!snap.exists() && snap.metadata.fromCache) return;
+      if(!snap.exists()){ fail("No session is running under that code."); return; }
+
+      const d = snap.data();
+      const poll = d.currentPoll || 0;
+      const run  = d.run || "";               // vote namespace for this lecture
+      const key  = run + ":" + poll;
+      const open = d.state === "open";
+
+      if(!poll){ setState("Waiting", false);
+        show(`<div class="msg"><b>You're in.</b>Wait for the first question &mdash; it'll appear here the moment it opens.</div>`);
+        return; }
+
+      setState(open ? "Voting open" : "Voting closed", open);
+      const opts = (d.q && d.q.options) || [];
+      const stem = (d.q && d.q.stem) || "Choose one";
+
+      show(`<h1>${stem}</h1><div class="opts">${
+        opts.map((t,i)=>`<button class="opt${voted[key]===i?" sel":""}" data-i="${i}"
+          ${open?"":"disabled"}><span class="k">${"ABC"[i]}</span><span>${t}</span></button>`).join("")
+      }</div>${open?"":`<div class="msg" style="padding-top:20px">Voting is closed for this one.</div>`}`);
+
+      mainEl.querySelectorAll("button.opt").forEach(b=>{
+        b.addEventListener("click", async ()=>{
+          const i = +b.dataset.i;
+          voted[key] = i;
+          mainEl.querySelectorAll("button.opt").forEach(x=>x.classList.toggle("sel", +x.dataset.i===i));
+          if(navigator.vibrate) navigator.vibrate(12);
+          try{
+            await fs.setDoc(
+              fs.doc(db,"sessions",code,"polls",run ? run + "-" + poll : String(poll),"votes",uid),
+              { choice:i, at:fs.serverTimestamp() });
+          }catch(e){ /* keep the UI selection; the tally just misses one */ }
+        });
+      });
+    }, (e)=> fail("Connection error: " + e.code));
+
+  }catch(e){
+    fail(e.message === "timeout"
+      ? "The network didn't respond. Conference wifi is often the culprit."
+      : "Couldn't start: " + e.message);
+  }
+}
+</script>
+</body>
+</html>
