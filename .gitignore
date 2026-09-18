@@ -14,5 +14,5 @@ live/.firebase/
 *.env
 *service-account*.json
 *-service-account.json
-firebase-adminsdk*.json
+*firebase-adminsdk*.json
 secrets/
