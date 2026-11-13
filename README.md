@@ -53,7 +53,10 @@ A Codex review of the pocus-live-lectures copy on 2026-11-13 found one gap in th
 `O` fix, in both copies. After a reload, `O` pressed before the deck had connected,
 on a slide with no poll, switched the slides to show of hands but never reached the
 phones. So a poll left open before the reload stayed open until the next poll or
-reveal slide. The deck now sends that close as soon as it connects.
+reveal slide. The deck now sends that close as soon as it connects. Codex's review
+of that fix found one older case, fixed the same day. A deck that came up read-only
+lost the close, because its heartbeat, on taking the session back, replayed only the
+last poll it had sent. `deck/live.js` now keeps the close as the intent to replay.
 
 Limits that remain:
 - A deck parked on one slide sends only its five-minute heartbeat, which has no
@@ -64,11 +67,10 @@ Limits that remain:
 - Closing a poll is what the phones show: the rules do not refuse a late vote.
 - `O` reaches the phones only through the deck's connection. If the network is down,
   the phones are closed when it returns; if the deck is still connecting, as soon as
-  it connects. A deck that gives up connecting tells the phones nothing until it is
-  reloaded, and hands mode does not survive a reload, so press `O` again after one.
-  A deck that comes up read-only (another browser drove the session in the last 30
-  minutes) cannot close them either. If it takes the session back later, it resends
-  the last poll or reveal slide it showed, but not this close.
+  it connects; if another browser holds the session, once the deck takes it back,
+  which the rules allow only once the session's heartbeat is 30 minutes old, or
+  missing. A deck that gives up connecting tells the phones nothing until it is reloaded, and
+  hands mode does not survive a reload, so press `O` again after one.
 
 Plus one guard: a deck served from `localhost` drives `LOCAL-BURN-7K4Q`, never the
 live code, unless `?s=` names a session (see **Rehearsing**).

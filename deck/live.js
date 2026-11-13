@@ -59,6 +59,10 @@ let canDrive = false; // are our writes landing?
 let queue = Promise.resolve();   // one write at a time
 let seq = 0;                     // newest slide change wins
 let lastIntent = null;           // replayed after a takeover
+/* lastIntent when the last thing asked of the phones was "close what you hold"
+   (O on a slide with no poll, before this page sent any poll), so that it is
+   replayed too (Codex review of the O fix, 2026-11-13). */
+const CLOSE_HELD = Object.freeze({ closeHeld: true });
 let hbTimer = null;
 let run = null;                  // vote namespace for THIS lecture
 
@@ -250,7 +254,8 @@ function startHeartbeat(fs){
         await fs.updateDoc(sessionRef, { heartbeat: fs.serverTimestamp() });
       }else if(await takeover(fs)){
         curPoll = null;                       // republish stem and options
-        if(lastIntent) onSlide(fs, lastIntent);
+        if(lastIntent === CLOSE_HELD) closeVoting(fs);
+        else if(lastIntent) onSlide(fs, lastIntent);
       }
     }catch(e){
       if(e && e.code === "permission-denied")
@@ -378,13 +383,18 @@ export function onSlide(fsMod, intent){
    (Codex review of this port, 2026-11-12) */
 export function closeVoting(fsMod){
   if(!db || !fsMod || !sessionRef) return;
-  if(lastIntent){
+  if(lastIntent && lastIntent !== CLOSE_HELD){
     if(lastIntent.open !== false) onSlide(fsMod, Object.assign({}, lastIntent, { open: false }));
     return;
   }
   // Nothing sent from this page yet: a reload onto a slide with no poll while
   // a poll was still open, or O right after a reset. Close whatever the phones
   // hold, where it stands. (Codex re-review, 2026-11-12)
+  // Remember it as the intent to replay. A deck that came up read-only is
+  // refused here, and the heartbeat that later takes the session back replays
+  // only lastIntent, so the phones stayed open (Codex review of the O fix,
+  // 2026-11-13). A poll slide or R R replaces it, as with any other intent.
+  lastIntent = CLOSE_HELD;
   const mine = ++seq;
   queue = queue.then(async () => {
     if(mine !== seq) return;
