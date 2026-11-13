@@ -61,6 +61,13 @@ const stT = document.getElementById("stateT");
 
 const show = (html) => { mainEl.innerHTML = html; };
 const setState = (txt, open) => { stT.textContent = txt; stEl.classList.toggle("open", !!open); };
+/* Everything this page did not write itself is text, never markup: the ?c=
+   code reaches the page inside Firebase's error messages, and any signed-in
+   browser can create a session and fill in q.stem and q.options. Both used to
+   go into innerHTML as they were, so a crafted /j?c= link ran script on this
+   origin (Codex review, 2026-11-12; the error-text half matches
+   pocus-live-lectures). No poll in slides.js uses markup in ask or options. */
+const plain = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 
 function fail(reason){
   setState("Offline", false);
@@ -107,12 +114,12 @@ if(!CONFIG || !CONFIG.apiKey || CONFIG.apiKey.startsWith("REPLACE")){
         return; }
 
       setState(open ? "Voting open" : "Voting closed", open);
-      const opts = (d.q && d.q.options) || [];
+      const opts = (d.q && Array.isArray(d.q.options)) ? d.q.options : [];
       const stem = (d.q && d.q.stem) || "Choose one";
 
-      show(`<h1>${stem}</h1><div class="opts">${
+      show(`<h1>${plain(stem)}</h1><div class="opts">${
         opts.map((t,i)=>`<button class="opt${voted[key]===i?" sel":""}" data-i="${i}"
-          ${open?"":"disabled"}><span class="k">${"ABC"[i]}</span><span>${t}</span></button>`).join("")
+          ${open?"":"disabled"}><span class="k">${"ABC"[i]}</span><span>${plain(t)}</span></button>`).join("")
       }</div>${open?"":`<div class="msg" style="padding-top:20px">Voting is closed for this one.</div>`}`);
 
       mainEl.querySelectorAll("button.opt").forEach(b=>{
@@ -128,12 +135,12 @@ if(!CONFIG || !CONFIG.apiKey || CONFIG.apiKey.startsWith("REPLACE")){
           }catch(e){ /* keep the UI selection; the tally just misses one */ }
         });
       });
-    }, (e)=> fail("Connection error: " + e.code));
+    }, (e)=> fail("Connection error: " + plain(e.code)));
 
   }catch(e){
     fail(e.message === "timeout"
       ? "The network didn't respond. Conference wifi is often the culprit."
-      : "Couldn't start: " + e.message);
+      : "Couldn't start: " + plain(e.message));
   }
 }
 </script>

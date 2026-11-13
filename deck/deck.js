@@ -25,6 +25,10 @@ let liveState = "off";          // off | live | readonly | offline — reported 
 let liveDetail = "";
 
 const esc = s => String(s == null ? "" : s);
+/* esc() passes HTML through, which slides.js content relies on. Anything that
+   can come from the URL (the ?s= code, error text that quotes it) goes through
+   this instead. */
+const html = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 // derived, never hardcoded - adding a poll must not leave "of 6" behind
 const TOTAL_POLLS = new Set(SLIDES.filter(x => x.poll).map(x => x.poll)).size;
 
@@ -266,16 +270,29 @@ function repaint(){
   attachMedia(el);
 }
 
+/* The backend changed state: swap the vote pill in place. Re-rendering the
+   slide here restarted its clip on every change, and the write deadline makes
+   changes more frequent on a flaky network. (Ported from pocus-live-lectures,
+   2026-11-12) */
+function refreshPill(){
+  stage.querySelectorAll(".slide.active .votestate").forEach(el => { el.outerHTML = votePill(); });
+}
+
 function renderNotes(){
   const s = SLIDES[idx];
   const n = s.notes || [];
+  // The fix line is a command the presenter may paste into a shell, so only a
+  // plain session code goes into it; anything else from ?s= gets a placeholder.
+  // (Codex re-review, 2026-11-12)
+  const active = Live.ACTIVE_CODE || MEETING.joinCode;
+  const codeArg = /^[A-Za-z0-9_-]{1,64}$/.test(active) ? active : "<session-code>";
   notesEl.innerHTML = `<div class="nt">Speaker notes · ${esc(s.label)}</div>
     <ul>${n.map(x=>`<li>${x}</li>`).join("")}</ul>
     ${s.verify?.length ? `<div class="src"><b>Verify before presenting:</b> ${
       s.verify.map(v=>`<br>— ${v}`).join("")}</div>` : ""}
     ${liveState === "live" ? "" : `<div class="src"><b>Live polling: ${liveState.toUpperCase()}</b>
-      — the phones are NOT following this deck. ${esc(liveDetail)}
-      <br>— Fix: run <b>node scripts/clear-session.mjs</b>, then reload this deck; it re-claims the session.
+      — the phones are NOT following this deck. ${html(liveDetail)}
+      <br>— Fix: run <b>node scripts/clear-session.mjs ${html(codeArg)}</b>, then reload this deck; it re-claims the session.
       <br>— Or press <b>O</b> and run the polls as a show of hands.</div>`}`;
 }
 
@@ -286,7 +303,9 @@ function renderNotes(){
 function pollIntent(s){
   if(!s.poll) return null;
   const q = SLIDES.find(x => x.poll === s.poll && x.type === "poll") || s;
-  return { poll: s.poll, open: s.type === "poll", ask: q.ask, options: q.options };
+  // In hands mode (O) the phones are told the poll is closed, so nobody is
+  // voting on a phone while the room votes by hand. (2026-11-12)
+  return { poll: s.poll, open: s.type === "poll" && !handsMode, ask: q.ask, options: q.options };
 }
 
 function go(n){
@@ -307,7 +326,11 @@ function go(n){
     // Poll slides carry live state too (the vote pill), so re-render those on
     // entry as well: a slide built before Firestore answered must not go on
     // promising the room that their phones are connected.
-    if(s.type === "poll" || (s.type === "reveal" && s.liveResults)){
+    // Reveals re-render on EVERY entry, not only when results are held: after
+    // R R deleted the results, a reveal visited earlier kept its old tally in
+    // the DOM and showed it again (Codex review of pocus-live-lectures,
+    // 2026-11-12).
+    if(s.type === "poll" || s.type === "reveal"){
       cur.innerHTML = LAYOUT[s.type](s);
       if(qrData) cur.querySelectorAll(".qrslot").forEach(img => img.src = qrData);
     }
@@ -349,7 +372,7 @@ window.__deckLiveStatus = (state, detail) => {
   liveState = state; liveDetail = detail || "";
   if(!changed) return;
   console.info("[pocus-live] " + state + (detail ? " — " + detail : ""));
-  if(SLIDES[idx].type === "poll") repaint();
+  refreshPill();
   renderNotes();
   if(state === "readonly" || state === "offline") warnPresenter(state);
 };
@@ -380,12 +403,18 @@ function warnPresenter(state){
 let runArm = 0;
 async function freshRun(){
   if(!(live && live.fs)){ toast("No live backend — there are no tallies to reset."); return; }
+  // A reset sent offline is not lost: it lands when the network returns, and
+  // the deck must wait for it before switching runs. Refuse it while the deck
+  // already knows its writes are not landing, rather than have it go off
+  // minutes later. (Gemini review, 2026-11-12)
+  if(liveState === "offline"){ toast("Live polling is offline, so a new run cannot start now. Try again once the pill says Voting open."); return; }
   const id = await Live.newRun(live.fs);
   if(!id){ toast("Could not start a new run — this deck does not own the session. Press <b>N</b>."); return; }
   SLIDES.forEach(s => { delete s.liveResults; });   // nothing stale may survive on screen
   repaint();
   Live.onSlide(live.fs, pollIntent(SLIDES[idx]));
-  toast("New vote run started · every tally is now empty · phones are waiting for the next poll");
+  toast("New vote run started · every tally is now empty · "
+      + (SLIDES[idx].poll ? "this slide's question is going to the phones" : "phones are waiting for the next poll"));
   console.info("[pocus-live] run " + id);
 }
 
@@ -401,6 +430,9 @@ addEventListener("keydown", e => {
   }
   else if(e.key === "o" || e.key === "O"){   // venue fallback: no backend, hands only
     handsMode = !handsMode; build(); go(idx);
+    // go() closes the phones on a poll or reveal slide. Anywhere else it has no
+    // poll to send, so close the question the phones were last given.
+    if(handsMode && live && live.fs && !SLIDES[idx].poll) Live.closeVoting(live.fs);
   }
   else if(e.key === "q" || e.key === "Q"){ document.body.classList.toggle("qa"); }
   else if(e.key === "r" || e.key === "R"){   // new lecture: fresh, empty tallies

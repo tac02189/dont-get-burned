@@ -1,6 +1,23 @@
 /* ============================================================
    pocus-live — the deck's side of the live poll.
 
+   pocus-live-lectures/engine/live.js is a copy of this file. Reviews of that
+   copy on 2026-11-12 found bugs that were also here, and four fixes were
+   ported back the same day, each commented and dated: publish() gives its
+   writes an 8-second deadline, so a dropped network turns the pill to "Show
+   of hands" instead of leaving it on "Voting open"; claim() drops the old
+   run's vote listener; the deck signs in through a named Firebase app, so the
+   phone page (/j, same origin) cannot replace the deck's identity; and a deck
+   served from localhost drives LOCAL-<code>, never the live session.
+
+   A Codex review of that port then found that the deadline needs more care,
+   because a write past its deadline is not lost: it lands when the network
+   returns. Fixed here the same day, and not yet in the copy: startRun() waits
+   for its write's real outcome, onSlide() forgets curPoll after a missed
+   deadline, only the newest write may report "live", newRun() goes through
+   the slide queue, and closeVoting() lets O close the phones from any slide.
+   A bug fixed in one copy belongs in both.
+
    DESIGN RULE: this module may never block, delay, or break the deck.
    Every failure path is silent to the AUDIENCE and leaves the deck in
    show-of-hands mode. A conference network is assumed hostile: captive
@@ -24,7 +41,15 @@ import { CONFIG, SESSION_CODE } from "./firebase-config.js";
    automated QA MUST use it: whichever browser creates a session owns it for
    good, so testing against the live code silently locks the presenter out of
    their own talk. That is exactly how this went wrong the first time. */
-const CODE = new URLSearchParams(location.search).get("s") || SESSION_CODE;
+/* A deck served from this machine (the preview pane, a local rehearsal) never
+   drives the live code unless told to with ?s=: it drives LOCAL-<code>.
+   Opening a local preview used to claim the real session for the preview
+   browser — the exact lockout the comment above describes. (2026-11-12) */
+const LOCAL = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+const CODE = new URLSearchParams(location.search).get("s") || (LOCAL ? "LOCAL-" + SESSION_CODE : SESSION_CODE);
+/* The session this deck is actually driving, so the speaker notes can name
+   it in the clear-session command instead of assuming the live code. */
+export const ACTIVE_CODE = CODE;
 
 const OWNER_KEY = "pocus-live:owner:" + CODE;
 let db = null, uid = null, sessionRef = null, unsubVotes = null;
@@ -75,12 +100,21 @@ export async function start(){
     return null;
   }
   try{
-    const [{ initializeApp }, auth, fs] = await Promise.all([
+    const [{ initializeApp, getApps }, auth, fs] = await Promise.all([
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
     ]);
-    const app = initializeApp(CONFIG);
+    // A NAMED app keeps the deck's anonymous identity apart from the phone
+    // page's. Both are served from the same origin, and Firebase Auth persists
+    // one user per (apiKey, app name) and syncs it across tabs: with the
+    // default app, opening /j in this browser while the deck was starting
+    // signed the deck in as the phone's user, its claim write never resolved,
+    // and the deck sat in "off" — then "readonly" after a reload, because the
+    // session belonged to the user it had lost. Found on the deployed
+    // pocus-live-lectures site, 2026-11-12. The deck's own identity still
+    // survives a reload.
+    const app = getApps().find(x => x.name === "pocus-deck") || initializeApp(CONFIG, "pocus-deck");
     const a = auth.getAuth(app);
     db = fs.getFirestore(app);
 
@@ -121,7 +155,20 @@ export async function start(){
 
 /* Create the session and take ownership of it. */
 async function claim(fs){
-  run = newRunId();
+  // Keep the run we were counting if this page already had one. Measured
+  // 2026-11-12: when a session is deleted mid-talk, the rules answer the next
+  // update with permission-denied (resource is null), not not-found, so the
+  // not-found -> claim() recovery in publish() does not actually run, and the
+  // deck reports read-only. The fix is a reload, which comes back through
+  // start() -> claim() with no run, so a new one starts. This line only
+  // matters if that recovery is ever reached.
+  run = run || newRunId();
+  // A new run is a new vote path: drop the old listener so the next slide change
+  // subscribes to this run. Without this, re-creating a deleted session left the
+  // deck counting the old run while the phones voted into the new one.
+  // (2026-11-12)
+  curPoll = null; subPoll = null;
+  if(unsubVotes){ unsubVotes(); unsubVotes = null; }
   await fs.setDoc(sessionRef, {
     ownerUid: uid, title: "Don't Get Burned", currentPoll: 0,
     state: "idle", q: {}, createdAt: fs.serverTimestamp(),
@@ -145,19 +192,39 @@ async function adoptRun(fs, d){
 /* Begin a fresh run and park the phones on "waiting" until the next poll. */
 async function startRun(fs){
   const id = newRunId();
-  const ok = await publish(fs, { run: id, currentPoll: 0, state: "idle", q: {} });
+  // wait: a run change must never be half-applied. With the write deadline,
+  // a reset sent while offline used to return false while the SDK kept the
+  // write: it landed later, the phones moved to the new run, and the deck went
+  // on counting the old one (Codex review of this port, 2026-11-12). So the
+  // pill still turns to "Show of hands" after the deadline, but this waits for
+  // the write's real outcome before the deck switches its own run.
+  const ok = await publish(fs, { run: id, currentPoll: 0, state: "idle", q: {} }, undefined, { wait: true });
   if(ok){
     run = id; curPoll = null; subPoll = null;
     if(unsubVotes){ unsubVotes(); unsubVotes = null; }
+    // The phones are parked on "waiting" now. Forget the last poll, so a
+    // takeover replay or O cannot send a question from before the reset into
+    // the new run. The deck sends the current slide's intent next.
+    lastIntent = null;
     console.info("[pocus-live] new vote run " + id + " — tallies start empty");
   }
   return ok;
 }
 
-/* Presenter pressed R twice: start a new lecture on the same session code. */
+/* Presenter pressed R twice: start a new lecture on the same session code.
+   The reset goes through the slide queue, not beside it: a reset that overtook
+   a slide write still waiting there let that older poll go out after it and
+   reopen voting on the new run (Codex re-review, 2026-11-12; older than the
+   port). It waits behind at most two slide writes; and since startRun()
+   waits for the network, slide writes made while a reset is pending wait
+   behind it, then the newest of them goes out after it. The deck refuses
+   R R while it already knows it is offline. */
 export async function newRun(fsMod){
   if(!db || !fsMod || !sessionRef) return null;
-  return (await startRun(fsMod)) ? run : null;
+  let ok = false;
+  const p = queue = queue.then(async () => { ok = await startRun(fsMod); }).catch(quiet("newRun"));
+  await p;
+  return ok ? run : null;
 }
 
 /* Claim a session that is not ours. The rules allow this only when nobody has
@@ -195,17 +262,51 @@ function startHeartbeat(fs){
 
 /* One write to the session doc, with the recoveries that matter:
    a cleared session is recreated, and a recovered network is noticed. */
-async function publish(fs, fields, retry){
+/* An offline write never rejects: the SDK queues it and the promise simply waits.
+   Without a deadline the deck went on saying "Voting open" while no phone could
+   hear it. Past the deadline, say "offline" now, and "live" again the moment the
+   queued write lands. (2026-11-12) */
+const WRITE_DEADLINE_MS = 8000;
+/* Only the NEWEST write may report "live". Writes land in the order they were
+   sent, so the newest one landing means every earlier one has too; an older
+   one landing says nothing about the slide on screen now, and used to put
+   "Voting open" back while the current question was still queued (Codex
+   review of this port, 2026-11-12). */
+let writeSeq = 0;
+/* opts.wait: past the deadline, still report "offline", but go on waiting for
+   the write's real outcome instead of returning false. startRun() needs that. */
+async function publish(fs, fields, retry, opts){
   try{
-    await fs.updateDoc(sessionRef, Object.assign({}, fields,
+    const w = fs.updateDoc(sessionRef, Object.assign({}, fields,
       { heartbeat: fs.serverTimestamp() }));
-    if(!canDrive) status("live", "writes are landing again");
+    const mine = ++writeSeq;
+    const landed = await Promise.race([
+      w.then(() => true),
+      new Promise(r => setTimeout(() => r(false), WRITE_DEADLINE_MS))
+    ]);
+    if(!landed){
+      status("offline", "a write has not been acknowledged in " + (WRITE_DEADLINE_MS / 1000) + " s");
+      if(!(opts && opts.wait)){
+        // The queued write can still FAIL later. Don't swallow that: a late
+        // permission-denied means another browser owns the session now. The next
+        // slide change retries through publish()'s normal recovery either way.
+        w.then(() => { if(mine === writeSeq && !canDrive) status("live", "queued writes landed"); })
+         .catch(e => {
+           quiet("late write")(e);
+           if(e && e.code === "permission-denied")
+             status("readonly", "a delayed write was rejected — another browser owns this session");
+         });
+        return false;
+      }
+      await w;   // a rejection here goes to the recovery below, like any other
+    }
+    if(mine === writeSeq && !canDrive) status("live", "writes are landing again");
     return true;
   }catch(e){
     if(e && e.code === "not-found" && retry !== false){
       // clear-session.mjs was run, or the doc was deleted mid-talk.
       // Recreate it (which claims it) and republish this slide.
-      try{ await claim(fs); return await publish(fs, fields, false); }
+      try{ await claim(fs); return await publish(fs, fields, false, opts); }
       catch(e2){ quiet("reclaim")(e2); }
     }
     if(e && e.code === "permission-denied" && retry !== false){
@@ -253,16 +354,42 @@ export function onSlide(fsMod, intent){
       // curPoll only moves when the phones have actually been told to move.
       // If the write failed the room is still on the previous question, and
       // the next slide change retries instead of assuming it got through.
-      if(ok) curPoll = poll;
+      // A write that missed its deadline may still land later, so after one
+      // the deck no longer knows which question the phones will end up on:
+      // forget, and send the whole question again next time. Keeping the old
+      // value left phones on poll 2 while the deck showed poll 1 "Voting open"
+      // (Codex review of this port, 2026-11-12).
+      curPoll = ok ? poll : null;
     }else{
       // Same question, different slide: open on the poll, closed on the
       // reveal — including when the presenter walks BACK to re-run a poll,
       // which used to leave every phone locked out.
-      await publish(fs, { state: open ? "open" : "closed" });
+      const ok = await publish(fs, { state: open ? "open" : "closed" });
+      if(!ok) curPoll = null;
     }
 
     if(poll !== subPoll){ subscribeVotes(fs, poll); subPoll = poll; }
   }).catch(quiet("onSlide"));
+}
+
+/* Hands mode (O) pressed on a slide with no poll — a content slide, or after
+   leaving a poll through the grid or Home: close the question the phones were
+   last given. On poll and reveal slides the deck already sends open:false.
+   (Codex review of this port, 2026-11-12) */
+export function closeVoting(fsMod){
+  if(!db || !fsMod || !sessionRef) return;
+  if(lastIntent){
+    if(lastIntent.open !== false) onSlide(fsMod, Object.assign({}, lastIntent, { open: false }));
+    return;
+  }
+  // Nothing sent from this page yet: a reload onto a slide with no poll while
+  // a poll was still open, or O right after a reset. Close whatever the phones
+  // hold, where it stands. (Codex re-review, 2026-11-12)
+  const mine = ++seq;
+  queue = queue.then(async () => {
+    if(mine !== seq) return;
+    if(!(await publish(fsMod, { state: "closed" }))) curPoll = null;
+  }).catch(quiet("closeVoting"));
 }
 
 function subscribeVotes(fs, poll){

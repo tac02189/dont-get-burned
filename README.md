@@ -23,6 +23,57 @@ against the real deployment, not a simulator.
 | Phone joins, sees the live question, taps a vote | works |
 | Presenter tally after 10 real voters | 50% / 20% / 30% |
 
+## 2026-11-12 — five engine bugs fixed, ported from pocus-live-lectures
+
+`pocus-live-lectures` (the two house-style lectures for 2026-11-18) runs a copy of
+this deck's engine. Codex and Gemini reviews of that copy, and testing its deployed
+site, found five bugs that were also here. Their fixes were ported back, each
+commented and dated in `deck/live.js` and `deck/deck.js`:
+
+| Bug | Fix |
+|---|---|
+| The pill stayed on **Voting open** after the network dropped: an offline write never fails, it waits | The write a poll or reveal slide sends gets 8 s. Past that the pill says **Show of hands**; it comes back by itself when the newest queued write lands, and the phones end on the last question you showed |
+| `R` `R` could bring back an old tally: a reveal visited earlier kept its numbers in the page | A reveal re-renders every time you enter it |
+| A session re-created mid-talk left the deck counting the old run's votes | `claim()` drops the old vote listener |
+| `O` did not close the phones: they went on taking votes while the room voted by hand | In hands mode the phones are told voting is closed, whatever slide you press it on |
+| Opening the phone page (`/j`) in the presenting browser could take over the deck's sign-in, because both share one origin | The deck signs in through its own named Firebase app |
+
+A Codex review of the port found that the 8-second deadline needed more care than
+the first version gave it, in both copies: a write past its deadline is not lost,
+it lands when the network returns. So the deck now forgets which question the
+phones hold after any write that missed its deadline, a late write turns the pill
+back to **Voting open** only if no newer one is still queued, and `R` `R` switches
+the deck to the new run only once that write has landed. `R` `R` also waits its
+turn behind slide writes already queued, so an older poll cannot go out after the
+reset and reopen voting. The deck refuses `R` `R` while it already knows it is
+offline (`N` shows **Live polling: OFFLINE**). If the network drops just as you press
+it, the reset goes out when the network returns, and the slide you are on follows it.
+
+Limits that remain:
+- A deck parked on one slide sends only its five-minute heartbeat, which has no
+  deadline, so it notices a dead network at the next poll or reveal slide. Phones
+  that already have the question can still vote meanwhile.
+- The writes the deck makes to recover a session (re-claiming it, taking it back)
+  have no deadline either.
+- Closing a poll is what the phones show: the rules do not refuse a late vote.
+- `O` pressed while the deck cannot reach Firestore closes the phones only when the
+  network returns.
+
+Plus one guard: a deck served from `localhost` drives `LOCAL-BURN-7K4Q`, never the
+live code, unless `?s=` names a session (see **Rehearsing**).
+
+The same review found that the phone page put text it did not write into the page
+as markup: the `?c=` code (inside Firebase's error messages) and a session's question
+and options, which any signed-in browser can set on a session it creates. A crafted
+`/j?c=` link could therefore run script on this site. Both are now shown as plain
+text.
+
+⚠️ **The deck signs in under a new anonymous identity since this change.** The
+browser that owned `BURN-7K4Q` before 2026-11-12 no longer does. `BURN-7K4Q` was last
+driven on 2026-09-18, so the 30-minute rule below hands it to whichever browser opens
+the deck first, which is the usual rule: open it on the presenting machine first. To
+hand it over at once instead, run `node scripts/clear-session.mjs` and reload.
+
 ## THE SESSION BELONGS TO WHICHEVER BROWSER OPENS THE DECK FIRST
 
 Read this before every talk. It is the only way the polling can break in a way
@@ -50,22 +101,25 @@ browser, so the presenting machine could never move the phones off poll 1.
    node scripts/clear-session.mjs REHEARSE-1   # tidy up afterwards
    ```
 3. **The vote pill tells the truth.** It says **Voting open** only when the
-   deck's own writes are landing. If it says **Show of hands** and you did not
-   press `O`, the phones are not following you — press `N` for the
-   diagnosis and the fix. A warning also flashes bottom-left at boot and on
-   every poll slide.
+   deck's own writes are landing; a write the server has not acknowledged
+   within 8 seconds counts as not landing. The deck writes on every poll and
+   reveal slide, so one parked on a slide finds out at the next of those. If it says
+   **Show of hands** and you did not press `O`, the phones are not following
+   you — press `N` for the diagnosis and the fix. A warning also flashes
+   bottom-left at boot and on every poll slide.
 4. **A session nobody has driven for 30 minutes can be claimed by any browser.**
    Added 2026-09-14 so a stale owner can never lock you out of your own talk with
    no terminal in reach. The presenting deck stamps a heartbeat on every poll
    slide and every five minutes it is open, so **a talk in progress cannot be
    taken over** — only an abandoned session can. If you are locked out, the deck
-   keeps asking: it takes itself back the moment the other browser has been quiet
-   long enough, and republishes the slide you are on. Rules test:
+   keeps asking every five minutes: it takes itself back at the first try after the
+   other browser has been quiet for 30, and republishes the slide you are on. Rules test:
    `node scripts/test-rules.mjs` — 30 cases, 8 of them this behaviour.
 5. **To hand the session over immediately:** `node scripts/clear-session.mjs`
    then reload the deck there. The first browser to load it after that owns it.
-   Needs this build directory, which lives on the **desktop only** — the
-   30-minute rule above is the fallback when it is not.
+   Needs a clone of this repo: the desktop has one, and since 2026-11-12 so does
+   the laptop, both at `%USERPROFILE%\pocus_pitfalls_build`. The 30-minute rule
+   above is the fallback when neither is in reach.
 
 ### One real bug the end-to-end test caught
 
@@ -75,7 +129,8 @@ tally. And because voting is closed by then, no later snapshot ever fixed it: **
 simply never have appeared during the talk.** Invisible to any single-slide test; only a
 poll-then-advance sequence exposes it.
 
-Fixed in `deck.js` `go()` — a reveal re-renders on entry whenever results are held for it.
+Fixed in `deck.js` `go()` — a reveal re-renders on entry. Until 2026-11-12 it did so only
+when results were held for it, which let a stale tally survive `R` `R` (table above).
 
 ## EACH LECTURE GETS ITS OWN TALLY, AUTOMATICALLY
 
@@ -112,6 +167,13 @@ node scripts/clear-session.mjs                          # wipe BURN-7K4Q before 
 
 Always run `clear-session.mjs` before presenting so rehearsal votes never appear in the room's tally.
 
+A deck served from `localhost` (the preview pane, `serve.cjs`) drives `LOCAL-BURN-7K4Q`
+rather than the live code, unless `?s=` names another session. A phone votes into it at
+`https://mizzou-pocus-live.web.app/j?c=LOCAL-BURN-7K4Q`; clear it afterwards with
+`node scripts/clear-session.mjs LOCAL-BURN-7K4Q`. The slides still show `BURN-7K4Q`
+and the QR still points at it, for a local deck and for `?s=` alike, so a rehearsal
+phone must open its URL by hand rather than scan.
+
 ## ⚠️ CUT ORDER — 8 polls + 29 slides is tight for 35 minutes
 
 At ~35s a poll that is ~4.7 min of voting across 25 slides in ~27 min of content.
@@ -137,7 +199,7 @@ take-home slide.
 | `N` | speaker notes (includes the **Verify before presenting** list) |
 | `Esc` | slide grid |
 | `F` | fullscreen |
-| `O` | **force show-of-hands mode** — kill the backend mid-talk if the network dies |
+| `O` | **force show-of-hands mode**, for when polling fails mid-talk: the slides drop the live tally and the phones are told voting is closed. The deck stays connected; `O` again goes back |
 | `R` `R` | **new vote run** — a fresh, empty tally for a new lecture (press twice) |
 | `Q` | QA mode, disables animation |
 
@@ -215,6 +277,13 @@ Edit `deck/slides.js` only. Then:
 ```bash
 cd "C:/Users/tac02/pocus_pitfalls_build" && node scripts/build-site.mjs && cd live && firebase deploy --only hosting
 ```
+
+⚠️ **On Windows, clone with `git clone -c core.autocrlf=false`.** Git for Windows
+defaults to `autocrlf=true`, which checks every text file out with CRLF endings. The
+repo and the live site are LF, so a deploy from such a clone would change all seven
+text files on the site even if you had edited none of them. Found on 2026-11-12, when
+the laptop's first clone compared unequal to the live release on exactly those seven
+files and equal on all 34 media files.
 
 ---
 
