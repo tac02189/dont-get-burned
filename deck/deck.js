@@ -431,7 +431,9 @@ addEventListener("keydown", e => {
   else if(e.key === "o" || e.key === "O"){   // venue fallback: no backend, hands only
     handsMode = !handsMode; build(); go(idx);
     // go() closes the phones on a poll or reveal slide. Anywhere else it has no
-    // poll to send, so close the question the phones were last given.
+    // poll to send, so close the question the phones were last given. Before
+    // the deck has connected there is no `live` to send it on; the boot sends
+    // it once the deck connects (below).
     if(handsMode && live && live.fs && !SLIDES[idx].poll) Live.closeVoting(live.fs);
   }
   else if(e.key === "q" || e.key === "Q"){ document.body.classList.toggle("qa"); }
@@ -462,5 +464,15 @@ addEventListener("resize", fit);
   const want = SLIDES.findIndex(s => s.id === location.hash.slice(1));
   go(want >= 0 ? want : 0);
   if(PREVIEW) document.body.classList.add("qa");
-  if(!PREVIEW){ Live.start().then(() => { if(live && live.fs) Live.onSlide(live.fs, pollIntent(SLIDES[idx])); }); }
+  // Once connected, bring the phones into line with this slide. A slide with
+  // no poll has nothing to send, except in hands mode: O pressed while the deck
+  // was still connecting could not reach the phones, so a poll left open
+  // before a reload stayed open until the next poll or reveal slide (Codex
+  // review of pocus-live-lectures ed074a4, 2026-11-13; same code here).
+  if(!PREVIEW){ Live.start().then(() => {
+    if(!(live && live.fs)) return;
+    const intent = pollIntent(SLIDES[idx]);
+    if(intent) Live.onSlide(live.fs, intent);
+    else if(handsMode) Live.closeVoting(live.fs);
+  }); }
 })();

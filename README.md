@@ -49,6 +49,12 @@ reset and reopen voting. The deck refuses `R` `R` while it already knows it is
 offline (`N` shows **Live polling: OFFLINE**). If the network drops just as you press
 it, the reset goes out when the network returns, and the slide you are on follows it.
 
+A Codex review of the pocus-live-lectures copy on 2026-11-13 found one gap in the
+`O` fix, in both copies. After a reload, `O` pressed before the deck had connected,
+on a slide with no poll, switched the slides to show of hands but never reached the
+phones. So a poll left open before the reload stayed open until the next poll or
+reveal slide. The deck now sends that close as soon as it connects.
+
 Limits that remain:
 - A deck parked on one slide sends only its five-minute heartbeat, which has no
   deadline, so it notices a dead network at the next poll or reveal slide. Phones
@@ -56,8 +62,13 @@ Limits that remain:
 - The writes the deck makes to recover a session (re-claiming it, taking it back)
   have no deadline either.
 - Closing a poll is what the phones show: the rules do not refuse a late vote.
-- `O` pressed while the deck cannot reach Firestore closes the phones only when the
-  network returns.
+- `O` reaches the phones only through the deck's connection. If the network is down,
+  the phones are closed when it returns; if the deck is still connecting, as soon as
+  it connects. A deck that gives up connecting tells the phones nothing until it is
+  reloaded, and hands mode does not survive a reload, so press `O` again after one.
+  A deck that comes up read-only (another browser drove the session in the last 30
+  minutes) cannot close them either. If it takes the session back later, it resends
+  the last poll or reveal slide it showed, but not this close.
 
 Plus one guard: a deck served from `localhost` drives `LOCAL-BURN-7K4Q`, never the
 live code, unless `?s=` names a session (see **Rehearsing**).
