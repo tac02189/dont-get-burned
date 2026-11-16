@@ -140,7 +140,7 @@ export async function start(){
       // uid living in one browser profile, so a stale one would lock the
       // presenter out of their own talk. Ask for it: the rules hand over a
       // session that has been quiet for 30 minutes, and refuse one that is
-      // being presented right now.
+      // being presented right now. R R can still take that one (newRun).
       const took = await takeover(fs);
       if(!took) status("readonly", "session " + CODE + " is owned by another browser (" +
         String(snap.data().ownerUid).slice(0, 6) + "…) and was driven within the last 30 minutes");
@@ -151,10 +151,29 @@ export async function start(){
 
     if(snap.exists()) await adoptRun(fs, snap.data());
 
+    watchOwner(fs);
     startHeartbeat(fs);
     window.__deckLiveReady({ fs, ok:true });
     return { fs };
   }catch(e){ quiet("start")(e); status("offline", (e && e.message) || "start failed"); return null; }
+}
+
+/* Notice at once when another browser takes the session with R R. Without
+   this a deck learned it only at its next write, which on a parked slide is
+   the five-minute heartbeat, and went on saying "Voting open" while the phones
+   followed the other deck (Codex review, 2026-11-15). Only a server snapshot
+   counts: a cached one may be stale, and one carrying this deck's own pending
+   write says nothing about the server. Losing ownership is all this reports;
+   the deck takes the session back only when R is pressed twice. */
+function watchOwner(fs){
+  try{
+    fs.onSnapshot(sessionRef, { includeMetadataChanges: true }, (snap) => {
+      if(!snap.exists() || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
+      const owner = snap.data().ownerUid;
+      if(canDrive && owner && owner !== uid)
+        status("readonly", "another browser took this session (R R there)");
+    }, quiet("owner watch"));
+  }catch(e){ quiet("owner watch")(e); }
 }
 
 /* Create the session and take ownership of it. */
@@ -190,11 +209,16 @@ async function adoptRun(fs, d){
   const sameLecture = d.run && hb && (Date.now() - hb) < RUN_GAP_MS;
   if(sameLecture){ run = d.run; return false; }
   if(!canDrive){ run = d.run || null; return false; }   // read-only: follow along, change nothing
-  return await startRun(fs);
+  return await startRun(fs, false);
 }
 
-/* Begin a fresh run and park the phones on "waiting" until the next poll. */
-async function startRun(fs){
+/* Begin a fresh run and park the phones on "waiting" until the next poll.
+   rr: the presenter pressed R twice. Only then may a refused write fall back
+   to a takeover, because the rules let a takeover that starts a new run take
+   even a session being presented. Without this, a deck starting a run at boot
+   whose write was refused (another browser had just pressed R R) took the
+   session straight back with no keypress (Codex review, 2026-11-15). */
+async function startRun(fs, rr){
   const id = newRunId();
   // wait: a run change must never be half-applied. With the write deadline,
   // a reset sent while offline used to return false while the SDK kept the
@@ -202,7 +226,7 @@ async function startRun(fs){
   // on counting the old one (Codex review of this port, 2026-11-12). So the
   // pill still turns to "Show of hands" after the deadline, but this waits for
   // the write's real outcome before the deck switches its own run.
-  const ok = await publish(fs, { run: id, currentPoll: 0, state: "idle", q: {} }, undefined, { wait: true });
+  const ok = await publish(fs, { run: id, currentPoll: 0, state: "idle", q: {} }, rr ? undefined : false, { wait: true });
   if(ok){
     run = id; curPoll = null; subPoll = null;
     if(unsubVotes){ unsubVotes(); unsubVotes = null; }
@@ -222,30 +246,40 @@ async function startRun(fs){
    port). It waits behind at most two slide writes; and since startRun()
    waits for the network, slide writes made while a reset is pending wait
    behind it, then the newest of them goes out after it. The deck refuses
-   R R while it already knows it is offline. */
+   R R while it already knows it is offline.
+
+   Since 2026-11-15 (the presenter's decision) R R also takes the session from
+   another browser. On a deck that does not own it, startRun()'s write is
+   refused; publish() retries it through takeover(), which names this deck as
+   owner in the same write, and the rules allow exactly that write — a new,
+   empty run — even on a session being presented (firestore.rules,
+   newRunTakeover). Nothing else a locked deck sends can take the session. */
 export async function newRun(fsMod){
   if(!db || !fsMod || !sessionRef) return null;
   let ok = false;
-  const p = queue = queue.then(async () => { ok = await startRun(fsMod); }).catch(quiet("newRun"));
+  const p = queue = queue.then(async () => { ok = await startRun(fsMod, true); }).catch(quiet("newRun"));
   await p;
   return ok ? run : null;
 }
 
-/* Claim a session that is not ours. The rules allow this only when nobody has
-   driven it for 30 minutes, so this can rescue an abandoned session and can
-   never steal a live one. `extra` is published in the same write. */
+/* Claim a session that is not ours. The rules allow this when nobody has
+   driven it for 30 minutes, which rescues an abandoned session, and for R R's
+   new, empty run, which may take even a live one (newRun). `extra` is
+   published in the same write. */
 async function takeover(fs, extra){
   try{
     await fs.updateDoc(sessionRef, Object.assign({}, extra || {}, {
       ownerUid: uid, heartbeat: fs.serverTimestamp() }));
     localStorage.setItem(OWNER_KEY, uid);
-    status("live", "claimed a session that had been left idle");
+    status("live", extra && extra.run ? "took the session for a new run (R R)"
+                                      : "claimed a session that had been left idle");
     return true;
   }catch(e){ quiet("takeover")(e); return false; }
 }
 
-/* Proof of life. It is what stops anyone claiming the session mid-talk, and
-   — when we are the one locked out — the retry that gets it back. */
+/* Proof of life. It is what stops anyone claiming the session mid-talk under
+   the 30-minute rule (R R is the exception: newRun), and — when we are the one
+   locked out — the retry that gets it back. */
 function startHeartbeat(fs){
   if(hbTimer) return;
   hbTimer = setInterval(async () => {
@@ -316,7 +350,13 @@ async function publish(fs, fields, retry, opts){
     }
     if(e && e.code === "permission-denied" && retry !== false){
       // Another browser owns it. If they have gone quiet the rules give it
-      // back; if they are presenting right now, they keep it and we say so.
+      // back; if they are presenting right now, they keep it and we say so,
+      // unless this write is R R's reset, whose takeover the rules allow even
+      // then (newRun). Say read-only before asking: a takeover sent as the
+      // network goes down has no deadline and waits for it to return, and the
+      // pill must not go on saying "Voting open" meanwhile (Codex review,
+      // 2026-11-15).
+      if(canDrive) status("readonly", "this deck no longer owns the session");
       if(await takeover(fs, fields)) return true;
     }
     status(e && e.code === "permission-denied" ? "readonly" : "offline",

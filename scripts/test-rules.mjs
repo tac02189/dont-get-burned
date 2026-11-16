@@ -6,6 +6,11 @@
      (a) an attendee must not be able to drive the presenter's deck
      (b) one device must not be able to stuff the ballot
    Everything below exists to prove those, plus the ordinary shape checks.
+
+   Since 2026-11-15, (a) has one exception, chosen by the presenter: R R
+   takes the session from any browser, but only by emptying it (a new run,
+   phones parked on "waiting", no question). The R R section below proves
+   it opens for exactly that write and for nothing else.
    ============================================================ */
 import { readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -31,6 +36,11 @@ const sessionDoc = (ownerUid = OWNER) => ({
   ownerUid, title: "Don't Get Burned", currentPoll: 1, state: "open",
   q: { stem: "What now?", options: ["A","B","C"] }, createdAt: NOW
 });
+
+/* A session another deck is presenting right now, and the R R takeover of it. */
+const LIVE = { ...sessionDoc(OWNER), heartbeat: RECENT, run: "r20261115t2255-bkxg" };
+const RR = (over = {}) => ({ ...LIVE, ownerUid: OTHER, heartbeat: NOW,
+  run: "r20261116t0100-ab12", currentPoll: 0, state: "idle", q: {}, ...over });
 
 /* req(method, path, auth, incomingData) */
 const req = (method, path, uid, data) => ({
@@ -80,7 +90,7 @@ const CASES = [
   // ---- stale-session takeover (added 2026-09-14) ----
   // A stale ownerUid locked the presenter out of his own talk, silently.
   // These prove the escape hatch opens for him and not for the room.
-  { n:"ATTENDEE claims a session the presenter is actively driving", e:"DENY",
+  { n:"ATTENDEE claims a session the presenter is actively driving, without starting a new run", e:"DENY",
     r: req("update", "/sessions/BURN-7K4Q", OTHER,
            { ...sessionDoc(OTHER), heartbeat: NOW }),
     existing: { ...sessionDoc(OWNER), heartbeat: RECENT } },
@@ -172,6 +182,50 @@ const CASES = [
   { n:"session update carrying the run field", e:"ALLOW",
     r: req("update", "/sessions/BURN-7K4Q", OWNER, { ...sessionDoc(OWNER), run:"r20260914t2210-4ab2", heartbeat: NOW }),
     existing: { ...sessionDoc(OWNER), heartbeat: RECENT } },
+
+  // ---- R R takes the session from any browser (added 2026-11-15) ----
+  // The presenter's decision: R R wins from any browser, by emptying the
+  // session. LIVE is a session another deck is presenting right now; RR() is
+  // exactly what the deck's takeover sends for a new run.
+  { n:"R R: another browser takes a session being presented, starting a new, empty run", e:"ALLOW",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR()), existing: LIVE },
+
+  { n:"R R on a session that has no run yet (sessions from before runs)", e:"ALLOW",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR()),
+    existing: { ...sessionDoc(OWNER), heartbeat: RECENT } },
+
+  { n:"R R takeover that keeps the old run (a takeover with no reset)", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ run: LIVE.run })), existing: LIVE },
+
+  { n:"a heartbeat-only claim of a session being presented (what a locked deck's heartbeat sends)", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, { ...LIVE, ownerUid: OTHER, heartbeat: NOW }), existing: LIVE },
+
+  { n:"R R takeover that opens voting in the same write", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ state: "open" })), existing: LIVE },
+
+  { n:"R R takeover that jumps to a poll in the same write", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ currentPoll: 3 })), existing: LIVE },
+
+  { n:"R R takeover that sends a question in the same write", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ q: { stem: "Hijacked", options: ["A","B","C"] } })), existing: LIVE },
+
+  { n:"R R takeover that also renames the session", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ title: "Something else" })), existing: LIVE },
+
+  { n:"R R takeover that drops a field", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, (({ createdAt, ...rest }) => rest)(RR())), existing: LIVE },
+
+  { n:"R R takeover naming somebody else as owner", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ ownerUid: VOTER })), existing: LIVE },
+
+  { n:"R R takeover with a back-dated heartbeat", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ heartbeat: RECENT })), existing: LIVE },
+
+  { n:"R R takeover with a run that is not a string", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", OTHER, RR({ run: 42 })), existing: LIVE },
+
+  { n:"R R takeover by an unauthenticated stranger", e:"DENY",
+    r: req("update", "/sessions/BURN-7K4Q", null, RR()), existing: LIVE },
 
   // ---- everything else is closed ----
   { n:"write to an unrelated collection", e:"DENY",

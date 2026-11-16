@@ -68,8 +68,8 @@ Limits that remain:
 - `O` reaches the phones only through the deck's connection. If the network is down,
   the phones are closed when it returns; if the deck is still connecting, as soon as
   it connects; if another browser holds the session, once the deck takes it back,
-  which the rules allow only once the session's heartbeat is 30 minutes old, or
-  missing. A deck that gives up connecting tells the phones nothing until it is reloaded, and
+  which the rules allow once the session's heartbeat is 30 minutes old, or
+  missing, or at once with `R` `R` (rule 6 below). A deck that gives up connecting tells the phones nothing until it is reloaded, and
   hands mode does not survive a reload, so press `O` again after one.
 
 Plus one guard: a deck served from `localhost` drives `LOCAL-BURN-7K4Q`, never the
@@ -106,7 +106,8 @@ browser, so the presenting machine could never move the phones off poll 1.
 1. **Open the deck on the machine and browser you will present from, first.**
    Whatever opens it first owns it. A different browser profile, a private
    window, or cleared site data means a different owner.
-2. **Never rehearse or QA on the live code.** `index.html?s=<scratch>` drives a
+2. **Never rehearse or QA on the live code.** Pressing `R` `R` there takes the
+   session from the presenting browser (rule 6). `index.html?s=<scratch>` drives a
    scratch session instead — pair it with `/j?c=<scratch>` on the phone:
    ```bash
    # deck:  https://mizzou-pocus-live.web.app/?s=REHEARSE-1
@@ -124,15 +125,30 @@ browser, so the presenting machine could never move the phones off poll 1.
    Added 2026-09-14 so a stale owner can never lock you out of your own talk with
    no terminal in reach. The presenting deck stamps a heartbeat on every poll
    slide and every five minutes it is open, so **a talk in progress cannot be
-   taken over** — only an abandoned session can. If you are locked out, the deck
+   claimed this way** — only an abandoned session can (rule 6 is the exception). If you are locked out, the deck
    keeps asking every five minutes: it takes itself back at the first try after the
    other browser has been quiet for 30, and republishes the slide you are on. Rules test:
-   `node scripts/test-rules.mjs` — 30 cases, 8 of them this behaviour.
-5. **To hand the session over immediately:** `node scripts/clear-session.mjs`
-   then reload the deck there. The first browser to load it after that owns it.
-   Needs a clone of this repo: the desktop has one, and since 2026-11-12 so does
-   the laptop, both at `%USERPROFILE%\pocus_pitfalls_build`. The 30-minute rule
-   above is the fallback when neither is in reach.
+   `node scripts/test-rules.mjs` — 48 cases, 8 of them this behaviour.
+5. **To hand the session over immediately:** press `R` twice on the deck you want
+   to own it (rule 6). Or `node scripts/clear-session.mjs`, then reload the deck
+   there; the first browser to load it after that owns it. That needs a clone of
+   this repo: the desktop has one, and since 2026-11-12 so does the laptop, both
+   at `%USERPROFILE%\pocus_pitfalls_build`.
+6. **`R` `R` takes the session from any browser** (2026-11-15, the presenter's
+   decision, after `R` `R` was refused on his own browser because another of his
+   held the session). A locked deck that presses `R` twice owns the session at
+   once: every tally starts empty, and the phones get this slide's question if
+   it has one, or wait for the next poll. The
+   rules allow exactly that write and nothing else, so a locked deck's slide
+   changes and heartbeats still cannot take the session, and two open decks do
+   not trade it back and forth. **The accepted cost:** anyone who opens the
+   public slides page can do the same to you mid-talk. The deck you were driving
+   turns to *Show of hands* with a warning within a few seconds (it watches the
+   session for a new owner); press `R` twice to take it back.
+   Rules test: 13 of the 48 cases.
+   **Present from one tab.** Two tabs of the deck in one browser share one
+   identity, so `R` `R` in one leaves the other counting the old run while still
+   able to drive the phones. Close the extra tab, or reload it.
 
 ### One real bug the end-to-end test caught
 
@@ -157,7 +173,7 @@ month's deck simply isn't looking at them.
 |---|---|
 | Deck opened and the session has been idle **2+ hours** | New run. This is the ordinary case: you open the deck for a lecture and every tally is empty. |
 | Deck **reloaded during a talk** (session driven within 2 hours) | **Same run, tallies preserved.** A refresh mid-talk must never blank results the room already gave you. |
-| You press **R twice** | New run on the spot. Use it when rehearsal and the real talk are the same afternoon. |
+| You press **R twice** | New run on the spot. Use it when rehearsal and the real talk are the same afternoon. Since 2026-11-15 it also takes the session from any other browser (rule 6 above). |
 | Session doesn't exist yet | New run, same as a first open. |
 
 `R` asks for confirmation before it does anything, because one stray keypress must

@@ -11,7 +11,18 @@ rules_version = '2';
 //  Presenter identity is the anonymous uid that created the session,
 //  stored as ownerUid. The presenter's browser keeps that uid in
 //  localStorage, so reopening the deck on the same machine still owns
-//  the session. A different device cannot take control.
+//  the session. A different device cannot drive it.
+//
+//  One deliberate exception, the presenter's decision on 2026-11-15:
+//  R R ("start a fresh vote run") wins from any browser. A deck that does
+//  not own the session may take it by starting a new, empty run in the
+//  same write, which also parks the phones on "waiting". It came after
+//  R R was refused on the presenter's own browser because another one of
+//  his held the session. The cost was accepted knowingly: anyone who opens
+//  the public slides page can take the poll by pressing R twice, which
+//  empties the room's tallies; the presenter takes it back the same way.
+//  Ordinary slide changes from a non-owner stay refused, so two open decks
+//  cannot trade the session back and forth.
 // ============================================================
 
 service cloud.firestore {
@@ -22,7 +33,8 @@ service cloud.firestore {
 
     // How long a session may sit untouched before another browser may claim it.
     // The presenting deck stamps a heartbeat on every poll slide and every five
-    // minutes it is open, so a talk in progress can never be taken over.
+    // minutes it is open, so a talk in progress is never claimed this way; R R
+    // is the separate exception, and it empties the session (newRunTakeover).
     function fresh(doc) {
       return "heartbeat" in doc.data
              && doc.data.heartbeat is timestamp
@@ -32,6 +44,22 @@ service cloud.firestore {
     function heartbeatOk() {
       return !("heartbeat" in request.resource.data)
              || request.resource.data.heartbeat is timestamp;
+    }
+    // R R from a deck that does not own the session (see the header): the
+    // write names the caller as owner, stamps a server heartbeat, starts a run
+    // id it did not have before, resets the phones to "waiting" with no
+    // question, and touches no other field. This is exactly what the deck's
+    // takeover sends for a new run; a slide change or a heartbeat cannot match.
+    function newRunTakeover() {
+      return request.resource.data.ownerUid == request.auth.uid
+             && request.resource.data.heartbeat == request.time
+             && request.resource.data.run is string
+             && request.resource.data.run != resource.data.get('run', '')
+             && request.resource.data.currentPoll == 0
+             && request.resource.data.state == 'idle'
+             && request.resource.data.q == {}
+             && request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['ownerUid','heartbeat','run','currentPoll','state','q']);
     }
 
     match /sessions/{code} {
@@ -53,14 +81,15 @@ service cloud.firestore {
       // Only the owner advances the poll or changes its state. This is the rule
       // that stops an attendee from driving the talk.
       //
-      // The one exception is a session nobody has driven for 30 minutes, which
+      // The first exception is a session nobody has driven for 30 minutes, which
       // any signed-in client may claim by naming itself owner and stamping a
       // fresh server heartbeat. Ownership is an anonymous uid that lives in one
       // browser profile, and on 2026-09-14 a stale one locked the presenter out
       // of his own talk in total silence — the phones stayed frozen on question
-      // one. An abandoned session must not be a permanent lockout; a live one
-      // still cannot be stolen, because a deck that is presenting is never 30
-      // minutes quiet.
+      // one. An abandoned session must not be a permanent lockout.
+      //
+      // The second is R R, which takes even a session that is being presented,
+      // but only by emptying it (newRunTakeover, and the header for why).
       allow update: if signedIn() && heartbeatOk() && (
                       ( isOwner(resource)
                         && request.resource.data.ownerUid == resource.data.ownerUid )
@@ -68,6 +97,8 @@ service cloud.firestore {
                       ( !fresh(resource)
                         && request.resource.data.ownerUid == request.auth.uid
                         && request.resource.data.heartbeat == request.time )
+                      ||
+                      newRunTakeover()
                     );
 
       allow delete: if isOwner(resource);

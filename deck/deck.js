@@ -292,7 +292,8 @@ function renderNotes(){
       s.verify.map(v=>`<br>— ${v}`).join("")}</div>` : ""}
     ${liveState === "live" ? "" : `<div class="src"><b>Live polling: ${liveState.toUpperCase()}</b>
       — the phones are NOT following this deck. ${html(liveDetail)}
-      <br>— Fix: run <b>node scripts/clear-session.mjs ${html(codeArg)}</b>, then reload this deck; it re-claims the session.
+      ${liveState === "readonly" ? `<br>— Fix: press <b>R</b> twice. This deck takes the session back from the other browser and starts empty tallies.` : ""}
+      <br>— ${liveState === "readonly" ? "Or" : "Fix"}: run <b>node scripts/clear-session.mjs ${html(codeArg)}</b>, then reload this deck; it re-claims the session.
       <br>— Or press <b>O</b> and run the polls as a show of hands.</div>`}`;
 }
 
@@ -391,10 +392,10 @@ function toast(html, ms){
 }
 
 function warnPresenter(state){
-  toast((state === "readonly"
-    ? "Live polling is read-only — another browser owns this session code."
-    : "Live polling is offline.")
-    + " Phones cannot follow this deck. Press <b>N</b> for the fix, or <b>O</b> for hands mode.");
+  toast(state === "readonly"
+    ? "Live polling is read-only — another browser owns this session code. Phones cannot follow this deck."
+      + " Press <b>R</b> twice to take it back, or <b>O</b> for hands mode."
+    : "Live polling is offline. Phones cannot follow this deck. Press <b>N</b> for the fix, or <b>O</b> for hands mode.");
 }
 
 /* A new run gives this lecture its own vote namespace, so the tallies start
@@ -408,12 +409,16 @@ async function freshRun(){
   // already knows its writes are not landing, rather than have it go off
   // minutes later. (Gemini review, 2026-11-12)
   if(liveState === "offline"){ toast("Live polling is offline, so a new run cannot start now. Try again once the pill says Voting open."); return; }
+  // Since 2026-11-15 the rules let R R take the session from another browser
+  // (firestore.rules, newRunTakeover), so a read-only deck takes it back here.
+  const takingBack = liveState === "readonly";
   const id = await Live.newRun(live.fs);
-  if(!id){ toast("Could not start a new run — this deck does not own the session. Press <b>N</b>."); return; }
+  if(!id){ toast("Could not start a new run" + (takingBack ? " or take the session back" : "") + ". Press <b>N</b>."); return; }
   SLIDES.forEach(s => { delete s.liveResults; });   // nothing stale may survive on screen
   repaint();
   Live.onSlide(live.fs, pollIntent(SLIDES[idx]));
-  toast("New vote run started · every tally is now empty · "
+  toast("New vote run started · " + (takingBack ? "this deck took the session back · " : "")
+      + "every tally is now empty · "
       + (SLIDES[idx].poll ? "this slide's question is going to the phones" : "phones are waiting for the next poll"));
   console.info("[pocus-live] run " + id);
 }
@@ -443,7 +448,8 @@ addEventListener("keydown", e => {
       runArm = Date.now();
       toast("Start a fresh vote run? Press <b>R</b> again within five seconds. "
           + "Every tally on this deck goes back to empty — the old votes are kept, "
-          + "but this deck stops counting them.", 5000);
+          + "but this deck stops counting them."
+          + (liveState === "readonly" ? " It also takes the session back from the other browser." : ""), 5000);
     }
   }
   else if(e.key === "Home"){ go(0); }
