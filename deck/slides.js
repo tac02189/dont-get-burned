@@ -74,7 +74,7 @@ export const SLIDES = [
     p:"“Which one fooled me?” is a question you ask afterwards. These four you can ask with the probe still on the patient." },
   notes:[
     "This is the only framework slide in the deck. 60 seconds, then move.",
-    "The joke lands: 'I was going to call these the Four Liars. Then I realised the machine has never lied to me once — it does exactly what physics says, every time.'",
+    "The joke lands: 'I was going to call these the Four Liars. Then I realized the machine has never lied to me once — it does exactly what physics says, every time.'",
     "Point out that Q1 comes first deliberately: you cannot interpret what you never acquired."
   ]
 },
@@ -396,7 +396,7 @@ export const SLIDES = [
   h2:["Findings that ", "support", " — and don't establish"],
   cells:[
     { kind:"img", src:M+"efast_pneumothorax_barcode_mmode.jpg", tone:"trap", mk:"✕",
-      t:"Absent sliding", d:"Barcode sign means the pleura isn't moving. Mainstem intubation, bullae, pleurodesis, ARDS and apnoea all do that too." },
+      t:"Absent sliding", d:"Barcode sign means the pleura isn't moving. Mainstem intubation, bullae, pleurodesis, ARDS and apnea all do that too." },
     { kind:"video", src:M+"efast_pneumothorax_lung_point.mp4", tone:"check", mk:"✓",
       t:"Lung point", d:"The transition between sliding and absent sliding is the specific sign. Absent sliding alone is the sensitive one." },
     { kind:"video", src:M+"heart_rv_strain_mcconnell.mp4", tone:"trap", mk:"✕",
@@ -438,7 +438,7 @@ export const SLIDES = [
   takeaway:{
     lab:"Bounded takeaway",
     p:"There was blood in the chest as well. A positive finding is the most reliable way to end a search early — <b>satisfaction of search</b> is not a knowledge failure, it is what finding something does to attention.",
-    scope:"Scope: this is about completing the exam you started. It does not mean every unstable trauma patient gets a full eFAST before intervention — that is a resuscitation judgement."
+    scope:"Scope: this is about completing the exam you started. It does not mean every unstable trauma patient gets a full eFAST before intervention — that is a resuscitation judgment."
   },
   notes:[
     "Name it out loud: free fluid in Morison's AND a hemothorax. One was found, one was never looked for.",
@@ -647,7 +647,7 @@ export const SLIDES = [
   attrib:"Mizzou Emergency Medicine · Emergency Ultrasound Division — questions and corrections welcome.",
   notes:[
     "Do not read this slide. Leave it up during Q&A.",
-    "The POCUS Atlas attribution is a licence requirement, not a courtesy — it stays on screen."
+    "The POCUS Atlas attribution is a license requirement, not a courtesy — it stays on screen."
   ]
 },
 
